@@ -1,0 +1,34 @@
+# ── Virtual Environments ──────────────
+venv/
+.venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+
+# ── Raw Data & Caches ─────────────────
+data/raw/*
+!data/raw/.gitkeep
+data/*.db
+data/processed/training.parquet
+
+# ── Notebooks & Scratch ───────────────
+notebooks/
+scratch/
+
+# ── Tests & Tool Artifacts ────────────
+tests/
+.pytest_cache/
+.ruff_cache/
+
+# ── Version Control & IDEs ────────────
+.git/
+.gitignore
+.dockerignore
+.github/
+.vscode/
+.idea/
+
+# ── Local Environment Secrets ─────────
+.env
+

@@ -1,0 +1,24 @@
+# ── Python ───────────────────────────
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# ── Environment ─────────────────────
+.env
+
+# ── Data & artifacts ────────────────
+data/raw/*
+!data/raw/.gitkeep
+*.db
+*.joblib
+!backend/models/solar_xgb.joblib
+
+# ── IDE / OS ────────────────────────
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+

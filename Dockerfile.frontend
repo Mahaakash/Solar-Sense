@@ -1,0 +1,29 @@
+# ==============================================================================
+# SolarSense — Frontend Dashboard Dockerfile (Streamlit Multi-Page UI)
+# ==============================================================================
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install pinned Python dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy frontend code and project configuration
+COPY frontend/ /app/frontend/
+COPY pyproject.toml /app/
+
+# Expose Streamlit dashboard port
+EXPOSE 8501
+
+# Run Streamlit multi-page application
+CMD ["streamlit", "run", "frontend/app.py", "--server.port", "8501", "--server.address", "0.0.0.0", "--server.headless", "true"]
+

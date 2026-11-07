@@ -1,0 +1,39 @@
+name: Daily Watchdog Screening
+
+on:
+  schedule:
+    # Runs every day at 15:30 UTC (21:00 / 9:00 PM IST)
+    - cron: '30 15 * * *'
+  workflow_dispatch:
+
+jobs:
+  run-watchdog:
+    name: Execute Pan-India Watchdog Evaluation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Remote Watchdog Webhook
+        env:
+          BACKEND_URL: ${{ secrets.BACKEND_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          if [ -z "$BACKEND_URL" ]; then
+            echo "::error::Secret BACKEND_URL is not set. Please add it to your repository secrets."
+            exit 1
+          fi
+
+          TARGET_URL="${BACKEND_URL%/}/jobs/run-watchdog"
+          echo "Triggering SolarSense Watchdog job at: $TARGET_URL"
+
+          # Use curl with retry options to allow free-tier services (e.g. Render) time to wake up
+          RESPONSE=$(curl -s -S --fail \
+            --retry 3 \
+            --retry-delay 15 \
+            --retry-connrefused \
+            --max-time 90 \
+            -X POST \
+            -H "Content-Type: application/json" \
+            -H "X-Cron-Secret: $CRON_SECRET" \
+            "$TARGET_URL")
+
+          echo "Watchdog Response: $RESPONSE"
+
