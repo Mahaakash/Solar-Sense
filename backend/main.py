@@ -6,15 +6,18 @@ Creates database tables on startup and exposes a /health endpoint.
 """
 
 import logging
+import threading
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from sqlalchemy import desc
 
 from backend import config
-from backend.db import engine, init_db
+from backend.db import JobRun, engine, get_session, init_db
 from backend.models.forecast import load_model, predict_hourly
 from backend.schemas import (
     AdvisorRequest,
@@ -31,6 +34,7 @@ from backend.schemas import (
 from backend.services.advisor import calculate_advisor_recommendation
 from backend.services.notifier import dispatch_alerts
 from backend.services.scheduler import (
+    execute_background_watchdog_run,
     run_all_sites_watchdog_check,
     shutdown_scheduler,
     start_scheduler,
@@ -364,10 +368,60 @@ def check_site_health_endpoint(site_id: int) -> list[AlertRead]:
         ) from err
 
 
+_watchdog_job_lock = threading.Lock()
+
+
 @app.post("/jobs/run-watchdog", tags=["jobs"])
-def run_cron_watchdog_endpoint(request: Request) -> dict[str, Any]:
+def run_cron_watchdog_endpoint(
+    request: Request, background_tasks: BackgroundTasks
+) -> JSONResponse:
     """
     Automated cron webhook endpoint to trigger watchdog evaluation across all sites.
+    Validates X-Cron-Secret, checks concurrency lock, logs JobRun, and dispatches background task.
+    Returns HTTP 202 immediately to prevent timeout on free-tier hosts.
+    """
+    cron_header = request.headers.get("X-Cron-Secret")
+    if not cron_header or cron_header != config.CRON_SECRET:
+        raise HTTPException(
+            status_code=401,
+            detail="Unauthorized: Missing or invalid X-Cron-Secret header",
+        )
+
+    # Concurrency check: prevent overlapping executions
+    if not _watchdog_job_lock.acquire(blocking=False):
+        logger.warning("Watchdog job trigger ignored: a previous run is already in progress.")
+        return JSONResponse(status_code=202, content={"status": "already_running"})
+
+    # Provision JobRun database record
+    try:
+        with get_session() as session:
+            job_run = JobRun(status="running")
+            session.add(job_run)
+            session.flush()
+            run_id_val = job_run.id
+            run_id_str = str(run_id_val)
+    except Exception as exc:
+        _watchdog_job_lock.release()
+        logger.error("Failed to initialize JobRun audit record: %s", exc)
+        raise HTTPException(
+            status_code=500, detail=f"Failed to initialize job run record: {exc}"
+        ) from exc
+
+    # Enqueue background task
+    background_tasks.add_task(
+        execute_background_watchdog_run, run_id_val, _watchdog_job_lock
+    )
+
+    return JSONResponse(
+        status_code=202,
+        content={"status": "started", "run_id": run_id_str},
+    )
+
+
+@app.get("/jobs/status", tags=["jobs"])
+def get_job_status_endpoint(request: Request) -> dict[str, Any]:
+    """
+    Return status and diagnostic summary for the latest watchdog background run.
     Requires 'X-Cron-Secret' header matching CRON_SECRET environment variable.
     """
     cron_header = request.headers.get("X-Cron-Secret")
@@ -377,14 +431,18 @@ def run_cron_watchdog_endpoint(request: Request) -> dict[str, Any]:
             detail="Unauthorized: Missing or invalid X-Cron-Secret header",
         )
 
-    try:
-        summary = run_all_sites_watchdog_check()
+    with get_session() as session:
+        latest = session.query(JobRun).order_by(desc(JobRun.id)).first()
+        if not latest:
+            return {"status": "no_runs_found"}
+
         return {
-            "status": "ok",
-            "message": "Watchdog evaluation completed across all sites",
-            "summary": summary,
+            "id": latest.id,
+            "run_id": str(latest.id),
+            "status": latest.status,
+            "started_at": latest.started_at.isoformat() if latest.started_at else None,
+            "finished_at": latest.finished_at.isoformat() if latest.finished_at else None,
+            "sites_checked": latest.sites_checked,
+            "alerts_created": latest.alerts_created,
+            "error": latest.error,
         }
-    except Exception as err:
-        raise HTTPException(
-            status_code=500, detail=f"Failed to execute scheduled watchdog job: {err}"
-        ) from err

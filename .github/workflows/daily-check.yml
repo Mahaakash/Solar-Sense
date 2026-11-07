@@ -11,7 +11,7 @@ jobs:
     name: Execute Pan-India Watchdog Evaluation
     runs-on: ubuntu-latest
     steps:
-      - name: Trigger Remote Watchdog Webhook
+      - name: Validate Secrets
         env:
           BACKEND_URL: ${{ secrets.BACKEND_URL }}
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
@@ -20,20 +20,88 @@ jobs:
             echo "::error::Secret BACKEND_URL is not set. Please add it to your repository secrets."
             exit 1
           fi
+          if [ -z "$CRON_SECRET" ]; then
+            echo "::error::Secret CRON_SECRET is not set. Please add it to your repository secrets."
+            exit 1
+          fi
 
+      - name: Wake backend
+        env:
+          BACKEND_URL: ${{ secrets.BACKEND_URL }}
+        run: |
+          HEALTH_URL="${BACKEND_URL%/}/health"
+          echo "Pinging backend at $HEALTH_URL to wake up instance..."
+
+          SUCCESS=0
+          for attempt in $(seq 1 12); do
+            echo "Attempt $attempt of 12: GET $HEALTH_URL"
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 20 "$HEALTH_URL" || true)
+            if [ "$HTTP_CODE" = "200" ]; then
+              echo "Backend is awake and responding (HTTP 200)!"
+              SUCCESS=1
+              break
+            fi
+            echo "Backend responded with HTTP $HTTP_CODE (or timed out). Sleeping 10s..."
+            sleep 10
+          done
+
+          if [ "$SUCCESS" -ne 1 ]; then
+            echo "::error::Backend failed to wake up after 12 attempts (120+ seconds). Aborting."
+            exit 1
+          fi
+
+      - name: Trigger watchdog
+        env:
+          BACKEND_URL: ${{ secrets.BACKEND_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
           TARGET_URL="${BACKEND_URL%/}/jobs/run-watchdog"
-          echo "Triggering SolarSense Watchdog job at: $TARGET_URL"
+          echo "Triggering watchdog job at: $TARGET_URL"
 
-          # Use curl with retry options to allow free-tier services (e.g. Render) time to wake up
-          RESPONSE=$(curl -s -S --fail \
-            --retry 3 \
-            --retry-delay 15 \
+          # POST with --max-time 30 and retry only on connection refused (at most 2 times)
+          RESPONSE_FILE=$(mktemp)
+          HTTP_STATUS=$(curl -s -w "%{http_code}" -o "$RESPONSE_FILE" \
+            --max-time 30 \
+            --retry 2 \
             --retry-connrefused \
-            --max-time 90 \
+            --retry-delay 5 \
             -X POST \
-            -H "Content-Type: application/json" \
             -H "X-Cron-Secret: $CRON_SECRET" \
-            "$TARGET_URL")
+            "$TARGET_URL" || true)
 
-          echo "Watchdog Response: $RESPONSE"
+          BODY=$(cat "$RESPONSE_FILE")
+          rm -f "$RESPONSE_FILE"
 
+          echo "HTTP Status: $HTTP_STATUS"
+          echo "Response Body: $BODY"
+
+          if [ "$HTTP_STATUS" != "202" ]; then
+            echo "::error::Expected HTTP 202 from /jobs/run-watchdog, but received HTTP $HTTP_STATUS"
+            exit 1
+          fi
+
+      - name: Check status
+        env:
+          BACKEND_URL: ${{ secrets.BACKEND_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          echo "Waiting 60 seconds for background watchdog execution to progress..."
+          sleep 60
+
+          STATUS_URL="${BACKEND_URL%/}/jobs/status"
+          echo "Querying job status at: $STATUS_URL"
+
+          RESPONSE_FILE=$(mktemp)
+          HTTP_STATUS=$(curl -s -w "%{http_code}" -o "$RESPONSE_FILE" \
+            --max-time 20 \
+            -H "X-Cron-Secret: $CRON_SECRET" \
+            "$STATUS_URL" || true)
+
+          BODY=$(cat "$RESPONSE_FILE")
+          rm -f "$RESPONSE_FILE"
+
+          echo "HTTP Status: $HTTP_STATUS"
+          echo "Job Status Response: $BODY"
+
+          # Note: Do not fail the workflow if the job is still running
+          echo "Watchdog status query complete."

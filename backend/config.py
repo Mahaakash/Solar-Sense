@@ -38,6 +38,9 @@ AGEING_EXTRA_SHORTFALL: float = 0.05     # 5 % shortfall beyond normal degradati
 RAIN_FORECAST_WINDOW_DAYS: int = 2       # Lookahead window for upcoming rain (days)
 RAIN_FORECAST_THRESHOLD_MM: float = 1.0  # Min precipitation to advise cleaning unneeded (mm)
 ALERT_DEDUPLICATION_DAYS: int = 7        # Suppress identical alerts within 7 days
+WATCHDOG_EVALUATION_DAYS: int = int(
+    os.environ.get("WATCHDOG_EVALUATION_DAYS", "45")
+)  # Bounded history window for watchdog (days)
 
 # ── Open-Meteo API URLs and retry configuration ─────────────────────
 OPEN_METEO_FORECAST_URL: str = "https://api.open-meteo.com/v1/forecast"

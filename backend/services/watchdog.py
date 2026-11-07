@@ -221,10 +221,14 @@ def _insert_alert_if_not_duplicate(
 
 # ── Watchdog Diagnostic Engine ──────────────────────────────────────
 
-def evaluate_site_health(site_id: int) -> list[AlertRead]:
+def evaluate_site_health(
+    site_id: int, days: int | None = None
+) -> list[AlertRead]:
     """
-    Run diagnostic rules on all available site readings against weather-adjusted expected yield.
+    Run diagnostic rules on recent site readings against weather-adjusted expected yield.
+    Limits evaluation to the most recent `days` (defaults to config.WATCHDOG_EVALUATION_DAYS).
     """
+    eval_days = config.WATCHDOG_EVALUATION_DAYS if days is None else days
     site = get_site_by_id(site_id)
     capacity_kw = float(site["capacity_kw"])
     tilt = float(site["tilt"])
@@ -234,14 +238,18 @@ def evaluate_site_health(site_id: int) -> list[AlertRead]:
     installed_on = pd.to_datetime(site["installed_on"]).date()
 
     with get_session() as session:
-        rows = (
+        query = (
             session.query(DailyReading)
             .filter(DailyReading.site_id == site_id)
-            .order_by(DailyReading.date.asc())
-            .all()
+            .order_by(desc(DailyReading.date))
         )
+        if eval_days and eval_days > 0:
+            query = query.limit(eval_days)
+        rows = query.all()
         if not rows:
             return []
+
+        rows = list(reversed(rows))
 
         readings_df = pd.DataFrame(
             [{"date": r.date, "actual_kwh": r.actual_kwh} for r in rows]
