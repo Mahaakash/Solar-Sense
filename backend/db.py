@@ -24,6 +24,7 @@ from sqlalchemy import (
     UniqueConstraint,
     create_engine,
     func,
+    inspect,
     text,
 )
 from sqlalchemy.orm import (
@@ -134,6 +135,9 @@ class Site(Base):
     tilt: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     azimuth: Mapped[float] = mapped_column(Float, nullable=False, default=180.0)
     installed_on: Mapped[date] = mapped_column(Date, nullable=False)
+    calibrated_performance_ratio: Mapped[float | None] = mapped_column(
+        Float, nullable=True, default=None
+    )
 
     __table_args__ = (
         Index("ix_sites_user_id", "user_id"),
@@ -202,6 +206,24 @@ def init_db(max_retries: int = 3, backoff: float = 1.0) -> None:
     for attempt in range(1, max_retries + 1):
         try:
             Base.metadata.create_all(bind=engine)
+
+            # Safely add calibrated_performance_ratio column if missing from existing sites table
+            try:
+                inspector = inspect(engine)
+                if "sites" in inspector.get_table_names():
+                    cols = [c["name"] for c in inspector.get_columns("sites")]
+                    if "calibrated_performance_ratio" not in cols:
+                        with engine.connect() as conn:
+                            conn.execute(
+                                text(
+                                    "ALTER TABLE sites "
+                                    "ADD COLUMN calibrated_performance_ratio FLOAT"
+                                )
+                            )
+                            conn.commit()
+                        logger.info("Added calibrated_performance_ratio column to sites table.")
+            except Exception as mig_exc:
+                logger.warning("Column migration check on sites skipped/failed: %s", mig_exc)
 
             # Enable WAL and FK enforcement for SQLite connections
             if _is_sqlite:

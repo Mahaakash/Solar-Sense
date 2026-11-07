@@ -22,6 +22,8 @@ SYSTEM_COST_INR_PER_KW: float = 55_000.0  # Installed cost per kWp (panels, inve
 
 # ── Solar performance parameters ────────────────────────────────────
 PERFORMANCE_RATIO: float = 0.78           # Fraction of theoretical output realised in practice
+SYSTEM_LOSS_PERCENT: float = 14.0         # Standard BoS loss % (PVGIS: 14%, PVWatts: 14.08%)
+SYSTEM_LOSS_FRACTION: float = 0.14        # Standard balance-of-system loss fraction (0.14)
 ANNUAL_DEGRADATION_RATE: float = 0.005    # 0.5 % per year panel output degradation
 TEMPERATURE_COEFFICIENT: float = -0.004   # Power change per °C above STC 25 °C (fraction/°C)
 ROOF_AREA_PER_KW_M2: float = 10.0        # Approx roof area needed per kWp installed (m²)

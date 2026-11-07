@@ -34,6 +34,43 @@ class SiteRead(SiteBase):
 
     id: int
     user_id: int
+    calibrated_performance_ratio: float | None = None
+
+
+# ── Ingestion & Calibration schemas ─────────────────────────────────
+
+class ImportReportResponse(BaseModel):
+    """Structured report returned after importing real generation CSV data."""
+    status: str = Field("ok", description="Import outcome status")
+    site_id: int = Field(..., description="Target site ID")
+    detected_format: str = Field(
+        ..., description="Detected format: daily_kwh, interval_kwh, or interval_kw"
+    )
+    energy_column: str = Field(..., description="Matched CSV column for energy/power")
+    energy_unit: str = Field(..., description="Interpreted energy/power unit")
+    rows_read: int = Field(..., description="Total CSV rows processed")
+    days_created: int = Field(..., description="Number of daily readings created or updated")
+    rows_skipped: int = Field(0, description="Number of invalid rows skipped")
+    skip_reasons: dict[str, int] = Field(
+        default_factory=dict, description="Count of skipped rows by reason"
+    )
+    date_range: dict[str, str | None] = Field(
+        default_factory=lambda: {"start": None, "end": None},
+        description="First and last dates ingested",
+    )
+
+
+class CalibrationResponse(BaseModel):
+    """Result of empirical clear-sky performance ratio calibration."""
+    status: str = Field("calibrated", description="Calibration outcome")
+    site_id: int = Field(..., description="Site ID")
+    calibrated_performance_ratio: float = Field(
+        ..., description="Empirical performance ratio estimate (median of clear-sky days)"
+    )
+    clear_sky_days_used: int = Field(..., description="Number of clear-sky days used for median")
+    total_days_evaluated: int = Field(
+        ..., description="Total days evaluated from available readings"
+    )
 
 
 # ── Reading schemas ─────────────────────────────────────────────────

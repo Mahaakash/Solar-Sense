@@ -74,6 +74,7 @@ def register_site(site_data: SiteCreate) -> SiteRead:
             tilt=site.tilt,
             azimuth=site.azimuth,
             installed_on=installed_d,
+            calibrated_performance_ratio=site.calibrated_performance_ratio,
         )
 
 
@@ -99,6 +100,7 @@ def get_site_by_id(site_id: int) -> dict[str, Any]:
             "tilt": site.tilt,
             "azimuth": site.azimuth,
             "installed_on": inst_str,
+            "calibrated_performance_ratio": site.calibrated_performance_ratio,
         }
 
 
@@ -117,6 +119,7 @@ def list_sites() -> list[SiteRead]:
                 tilt=float(r.tilt),
                 azimuth=float(r.azimuth),
                 installed_on=pd.to_datetime(r.installed_on).date(),
+                calibrated_performance_ratio=r.calibrated_performance_ratio,
             )
             for r in rows
         ]
@@ -352,11 +355,18 @@ def evaluate_site_health(
         if fault_detected:
             return _get_site_alerts_from_session(session, site_id)
 
+        # Determine baseline Performance Ratio:
+        # Prefer site's calibrated ratio if present, else fallback to config.PERFORMANCE_RATIO
+        calibrated_pr = site.get("calibrated_performance_ratio")
+        base_pr = float(calibrated_pr) if calibrated_pr is not None else config.PERFORMANCE_RATIO
+        pr_scale = base_pr / config.PERFORMANCE_RATIO
+        effective_pr_alert_level = config.PR_ALERT_LEVEL * pr_scale
+
         # ── Rule 2: 7-Day Underperformance & Dust/Soiling ───────────
         recent_7d = readings_df.tail(7)
         avg_pr_7d = recent_7d["pr"].mean()
 
-        if avg_pr_7d < config.PR_ALERT_LEVEL:
+        if avg_pr_7d < effective_pr_alert_level:
             # Underperformance detected. Check if caused by gradual dust accumulation over 2+ weeks
             dust_window_days = config.DUST_DECLINE_WINDOW_DAYS
             dust_subset = readings_df.tail(dust_window_days)
@@ -420,8 +430,8 @@ def evaluate_site_health(
         system_age_years = (latest_reading_date - installed_on).days / 365.25
 
         if system_age_years >= 1.0 and n_records >= 30:
-            # Expected PR considering annual degradation
-            expected_pr = config.PERFORMANCE_RATIO * (
+            # Expected PR considering annual degradation from baseline (calibrated or global)
+            expected_pr = base_pr * (
                 (1.0 - config.ANNUAL_DEGRADATION_RATE) ** system_age_years
             )
             overall_pr = readings_df["pr"].mean()

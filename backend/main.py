@@ -23,15 +23,19 @@ from backend.schemas import (
     AdvisorRequest,
     AdvisorResponse,
     AlertRead,
+    CalibrationResponse,
     DailyForecastItem,
     ForecastResponse,
     HourlyForecastItem,
+    ImportReportResponse,
     ReadingsSubmission,
     SiteCreate,
     SiteHealthResponse,
     SiteRead,
 )
 from backend.services.advisor import calculate_advisor_recommendation
+from backend.services.calibration import calibrate_site_ratio
+from backend.services.importer import import_readings_csv
 from backend.services.notifier import dispatch_alerts
 from backend.services.scheduler import (
     execute_background_watchdog_run,
@@ -310,6 +314,104 @@ async def submit_readings(request: Request) -> dict[str, Any]:
         raise
     except Exception as err:
         raise HTTPException(status_code=500, detail=f"Failed to ingest readings: {err}") from err
+
+
+@app.post("/readings/import", response_model=ImportReportResponse, tags=["watchdog"])
+async def import_readings_endpoint(
+    request: Request,
+    site_id: int | None = Query(None, description="Site ID to import readings into"),
+) -> ImportReportResponse:
+    """
+    Import real-world solar generation CSV data with automatic column, format, and unit detection.
+
+    Supports:
+    - Daily kWh, Interval kWh (summed daily), and Interval kW (integrated to daily kWh).
+    - Diverse date formats (ISO, DD/MM/YYYY), thousands commas, Wh/kWh/MWh units.
+    - Idempotent upsert to database without duplicates.
+    """
+    content_type = request.headers.get("content-type", "")
+    target_site_id = site_id
+
+    try:
+        if "multipart/form-data" in content_type:
+            form = await request.form()
+            form_site_id = form.get("site_id")
+            if form_site_id:
+                try:
+                    target_site_id = int(str(form_site_id))
+                except ValueError as int_err:
+                    raise HTTPException(
+                        status_code=400, detail="Form field 'site_id' must be an integer."
+                    ) from int_err
+
+            if not target_site_id:
+                raise HTTPException(
+                    status_code=400, detail="Missing required 'site_id' parameter."
+                )
+
+            file_obj = form.get("file")
+            if not file_obj or not hasattr(file_obj, "read"):
+                raise HTTPException(
+                    status_code=400, detail="Missing 'file' field in multipart form upload."
+                )
+
+            file_bytes = await file_obj.read()
+            report_dict = import_readings_csv(
+                site_id=target_site_id,
+                content=file_bytes,
+                filename=getattr(file_obj, "filename", ""),
+            )
+            return ImportReportResponse.model_validate(report_dict)
+
+        else:
+            # Handle raw CSV body (e.g. curl --data-binary @file.csv /readings/import?site_id=1)
+            if not target_site_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Query parameter 'site_id' is required when uploading raw CSV data.",
+                )
+
+            body_bytes = await request.body()
+            if not body_bytes:
+                raise HTTPException(status_code=400, detail="Uploaded CSV request body is empty.")
+
+            report_dict = import_readings_csv(
+                site_id=target_site_id,
+                content=body_bytes,
+            )
+            return ImportReportResponse.model_validate(report_dict)
+
+    except HTTPException:
+        raise
+    except ValueError as err:
+        err_msg = str(err)
+        if "not found" in err_msg.lower():
+            raise HTTPException(status_code=404, detail=err_msg) from err
+        raise HTTPException(status_code=400, detail=err_msg) from err
+    except Exception as err:
+        logger.error("CSV import failed: %s", err, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"CSV import failed: {err}") from err
+
+
+@app.post("/sites/{site_id}/calibrate", response_model=CalibrationResponse, tags=["watchdog"])
+def calibrate_site_endpoint(site_id: int) -> CalibrationResponse:
+    """
+    Empirically calibrate site Performance Ratio (PR) from clear-sky days.
+
+    Calculates the median (actual / expected) on high-irradiance days and persists it
+    to the site record. Subsequent watchdog checks will evaluate health against this baseline.
+    """
+    try:
+        result = calibrate_site_ratio(site_id=site_id)
+        return CalibrationResponse.model_validate(result)
+    except ValueError as err:
+        err_msg = str(err)
+        if "not found" in err_msg.lower():
+            raise HTTPException(status_code=404, detail=err_msg) from err
+        raise HTTPException(status_code=400, detail=err_msg) from err
+    except Exception as err:
+        logger.error("Calibration failed for site %s: %s", site_id, err, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Site calibration failed: {err}") from err
 
 
 @app.get("/sites/{site_id}/health", response_model=SiteHealthResponse, tags=["watchdog"])
